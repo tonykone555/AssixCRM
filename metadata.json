@@ -1,0 +1,6 @@
+{
+  "name": "Assix CRM",
+  "description": "Minimalist and innovative business Lead CRM featuring AI Call Simulator roleplay, Live FaceTime & WhatsApp Call Co-Pilot teleprompter, AI Video Pitch iMessage delivery with pixel telemetry, team member tabs, and multi-account cloud sync.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

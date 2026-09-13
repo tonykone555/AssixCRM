@@ -1,0 +1,32 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isSuperAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.email.lower() == "tonykone21@gmail.com" || 
+        request.auth.email.lower() == "tonykone21@gmail.com"
+      );
+    }
+
+    match /users/{userId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /leads/{leadId} {
+      allow read, create, update, delete: if isAuthenticated();
+    }
+
+    match /customFields/{fieldId} {
+      allow read, create, update, delete: if isAuthenticated();
+    }
+
+    match /messages/{messageId} {
+      allow read, create, update, delete: if isAuthenticated();
+    }
+  }
+}

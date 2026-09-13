@@ -1,0 +1,53 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["uid", "email", "createdAt"]
+    },
+    "Lead": {
+      "title": "Lead",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "ownerEmail": { "type": "string" },
+        "name": { "type": "string" },
+        "instagramHandle": { "type": "string" },
+        "profilePic": { "type": "string" },
+        "website": { "type": "string" },
+        "status": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "productImage": { "type": "string" },
+        "screenshots": { "type": "array", "items": { "type": "string" } },
+        "notes": { "type": "string" },
+        "customFields": { "type": "object" },
+        "interactions": { "type": "array" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "ownerId", "instagramHandle", "name", "status"]
+    },
+    "CustomFieldDefinition": {
+      "title": "CustomFieldDefinition",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "key": { "type": "string" },
+        "label": { "type": "string" },
+        "type": { "type": "string" },
+        "required": { "type": "boolean" },
+        "options": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["id", "ownerId", "key", "label", "type"]
+    }
+  }
+}
