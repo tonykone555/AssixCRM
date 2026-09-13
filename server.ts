@@ -1,3 +1,6 @@
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import crypto from 'crypto';
 import express from 'express';
 import * as cheerio from 'cheerio';
@@ -1467,10 +1470,16 @@ let ENCRYPTION_KEY;
 if (ENCRYPTION_KEY_B64) {
     ENCRYPTION_KEY = Buffer.from(ENCRYPTION_KEY_B64, 'base64');
     if (ENCRYPTION_KEY.length !== 32) {
+        if (process.env.NODE_ENV === 'production') {
+            throw new Error("MARKETPLACE_TOKEN_ENCRYPTION_KEY must decode to exactly 32 bytes.");
+        }
         console.warn("MARKETPLACE_TOKEN_ENCRYPTION_KEY must decode to exactly 32 bytes.");
         ENCRYPTION_KEY = crypto.randomBytes(32);
     }
 } else {
+    if (process.env.NODE_ENV === 'production') {
+        throw new Error("MARKETPLACE_TOKEN_ENCRYPTION_KEY is required in production");
+    }
     ENCRYPTION_KEY = crypto.randomBytes(32); // Fallback for dev only
 }
 
@@ -1488,8 +1497,9 @@ function decryptToken(text: string) {
   if (!text) return text;
   try {
     const parts = text.split(':');
-    if (parts.length !== 3) return text; // Not GCM format
+    if (parts.length !== 3) throw new Error("Invalid encrypted token format");
     const [ivHex, authTagHex, encryptedHex] = parts;
+    if (ivHex.length !== 24 || authTagHex.length !== 32 || encryptedHex.length === 0) throw new Error("Invalid token part lengths");
     const iv = Buffer.from(ivHex, 'hex');
     const authTag = Buffer.from(authTagHex, 'hex');
     const encrypted = Buffer.from(encryptedHex, 'hex');
@@ -1500,7 +1510,7 @@ function decryptToken(text: string) {
     return decrypted;
   } catch (e) {
     console.error("Decryption failed:", e);
-    return null;
+    throw new Error("Decryption failed");
   }
 }
 
@@ -1635,86 +1645,98 @@ app.get('/api/ebay/callback', async (req: any, res: any) => {
 });
 
 // --- EBAY LISTING & SYNC ---
-app.post('/api/ebay/publish', requireMarketplaceAuth, async (req: any, res: any) => {
-  try {
-     const ownerUid = req.user.uid;
-     const { inventoryItemId } = req.body;
+
+async function publishToEbay(ownerUid: string, inventoryItemId: string, price: number) {
      const db = getFirestore();
      const inventoryDoc = await db.collection('inventoryItems').doc(inventoryItemId).get();
      
      if (!inventoryDoc.exists || inventoryDoc.data()?.ownerUid !== ownerUid) {
-        return res.status(403).json({ error: 'Forbidden or not found' });
+        throw new Error('Forbidden or not found');
      }
      
      if (!inventoryDoc.data()?.ownershipConfirmed) {
-        return res.status(400).json({ error: 'Publish blocked: ownershipConfirmed must be true.' });
+        throw new Error('Publish blocked: ownershipConfirmed must be true.');
      }
      if (!inventoryDoc.data()?.userOwnedImages || inventoryDoc.data()?.userOwnedImages.length === 0) {
-        return res.status(400).json({ error: 'Publish blocked: userOwnedImages must be present.' });
+        throw new Error('Publish blocked: userOwnedImages must be present.');
+     }
+     if (!inventoryDoc.data()?.condition) {
+        throw new Error('Publish blocked: condition must be provided.');
+     }
+     if (price <= 0) {
+        throw new Error('Publish blocked: Price must be strictly positive.');
      }
      
-     // 3. Real eBay Inventory API calls
-     // First, get the connection to get the access token
      const connections = await db.collection('marketplaceConnections').where('ownerUid', '==', ownerUid).where('provider', '==', 'ebay').get();
-     if (connections.empty) return res.status(400).json({ error: 'No eBay connection found' });
+     if (connections.empty) throw new Error('No eBay connection found');
      
      const conn = connections.docs[0].data();
      const refreshToken = decryptToken(conn.encryptedRefreshToken);
-     const env = process.env.EBAY_ENVIRONMENT || 'sandbox';
+     const env = conn.environment || 'sandbox'; // use connection env, not process.env
      const tokenUrl = env === 'production' ? 'https://api.ebay.com/identity/v1/oauth2/token' : 'https://api.sandbox.ebay.com/identity/v1/oauth2/token';
      const authHeader = Buffer.from(`${process.env.EBAY_CLIENT_ID}:${process.env.EBAY_CLIENT_SECRET}`).toString('base64');
      
-     // This is the correct sequence, handled robustly:
-     let accessToken = 'MOCK_TOKEN_FOR_TESTS';
-     let isRealEbayCall = false;
-     
-     if (process.env.EBAY_CLIENT_ID && refreshToken) {
-       isRealEbayCall = true;
-       // Attempt token refresh
-       const tokenRes = await fetch(tokenUrl, {
-         method: 'POST',
-         headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Authorization': `Basic ${authHeader}` },
-         body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken, scope: 'https://api.ebay.com/oauth/api_scope/sell.inventory' })
-       });
-       const tokenData = await tokenRes.json();
-       if (tokenData.access_token) accessToken = tokenData.access_token;
+     if (!process.env.EBAY_CLIENT_ID || !refreshToken) {
+         throw new Error('Missing eBay credentials or refresh token');
      }
-
+     
+     const tokenRes = await fetch(tokenUrl, {
+       method: 'POST',
+       headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Authorization': `Basic ${authHeader}` },
+       body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken, scope: 'https://api.ebay.com/oauth/api_scope/sell.inventory' })
+     });
+     
+     const tokenData = await tokenRes.json();
+     if (!tokenData.access_token) {
+        throw new Error('eBay token refresh failed: ' + JSON.stringify(tokenData));
+     }
+     const accessToken = tokenData.access_token;
+     
      const baseUrl = env === 'production' ? 'https://api.ebay.com/sell/inventory/v1' : 'https://api.sandbox.ebay.com/sell/inventory/v1';
      const sku = inventoryDoc.data()?.internalSku || `SKU-${inventoryItemId}`;
-
-     if (isRealEbayCall && accessToken !== 'MOCK_TOKEN_FOR_TESTS') {
-         // Step A: PUT /inventory_item/{sku}
-         await fetch(`${baseUrl}/inventory_item/${sku}`, {
-            method: 'PUT',
-            headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Language': 'en-US', 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-               product: { title: inventoryDoc.data()?.title, description: inventoryDoc.data()?.description, aspects: {}, imageUrls: inventoryDoc.data()?.userOwnedImages },
-               condition: "NEW", availability: { shipToLocationAvailability: { quantity: 1 } }
-            })
-         });
-         
-         // Step B: POST /offer
-         const offerRes = await fetch(`${baseUrl}/offer`, {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Language': 'en-US', 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-               sku: sku, marketplaceId: "EBAY_US", format: "FIXED_PRICE",
-               pricingSummary: { price: { value: req.body.price || "0.0", currency: "USD" } },
-               availableQuantity: 1, listingPolicies: { fulfillmentPolicyId: "mock", paymentPolicyId: "mock", returnPolicyId: "mock" },
-               categoryId: "12345"
-            })
-         });
-         const offerData = await offerRes.json();
-         const offerId = offerData.offerId || "MOCK_OFFER_ID";
-         
-         // Step C: POST /offer/{offerId}/publish
-         if (offerId !== "MOCK_OFFER_ID") {
-             await fetch(`${baseUrl}/offer/${offerId}/publish`, {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Language': 'en-US', 'Content-Type': 'application/json' }
-             });
-         }
+     
+     // Required aspects check
+     // (In a real production app, we would fetch taxonomy requirements. We simulate the HTTP validation structure here).
+     
+     const putRes = await fetch(`${baseUrl}/inventory_item/${sku}`, {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Language': 'en-US', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+           product: { title: inventoryDoc.data()?.title, description: inventoryDoc.data()?.description, aspects: inventoryDoc.data()?.attributes || {}, imageUrls: inventoryDoc.data()?.userOwnedImages },
+           condition: inventoryDoc.data()?.condition, availability: { shipToLocationAvailability: { quantity: 1 } }
+        })
+     });
+     
+     if (!putRes.ok) {
+         const putErr = await putRes.text();
+         throw new Error('eBay PUT inventory failed: ' + putErr);
+     }
+     
+     const offerRes = await fetch(`${baseUrl}/offer`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Language': 'en-US', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+           sku: sku, marketplaceId: "EBAY_US", format: "FIXED_PRICE",
+           pricingSummary: { price: { value: price.toString(), currency: "USD" } },
+           availableQuantity: 1, listingPolicies: { fulfillmentPolicyId: conn.fulfillmentPolicyId, paymentPolicyId: conn.paymentPolicyId, returnPolicyId: conn.returnPolicyId },
+           categoryId: inventoryDoc.data()?.category || "UNKNOWN",
+           merchantLocationKey: conn.merchantLocationKey
+        })
+     });
+     
+     const offerData = await offerRes.json();
+     if (!offerRes.ok || !offerData.offerId) {
+        throw new Error('eBay POST offer failed: ' + JSON.stringify(offerData));
+     }
+     
+     const publishRes = await fetch(`${baseUrl}/offer/${offerData.offerId}/publish`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Language': 'en-US', 'Content-Type': 'application/json' }
+     });
+     
+     const publishData = await publishRes.json();
+     if (!publishRes.ok || !publishData.listingId) {
+        throw new Error('eBay publish offer failed: ' + JSON.stringify(publishData));
      }
      
      // Save idempotency and listing locally
@@ -1723,15 +1745,16 @@ app.post('/api/ebay/publish', requireMarketplaceAuth, async (req: any, res: any)
         inventoryItemId,
         marketplace: 'ebay',
         internalSku: sku,
+        externalOfferId: offerData.offerId,
+        externalListingId: publishData.listingId,
         title: inventoryDoc.data()?.title || '',
-        price: req.body.price || 0,
+        price: price,
         currency: 'USD',
         quantity: 1,
         listingStatus: 'active',
         lastSyncedAt: new Date().toISOString()
      });
      
-     // Audit Event
      await db.collection('marketplaceAuditEvents').add({
         ownerUid,
         actorType: 'user',
@@ -1741,39 +1764,110 @@ app.post('/api/ebay/publish', requireMarketplaceAuth, async (req: any, res: any)
         targetType: 'inventoryItem',
         targetId: inventoryItemId,
         requestSummary: 'Publish to eBay',
-        resultSummary: isRealEbayCall ? 'Published via eBay API' : 'Published (Mocked)',
+        resultSummary: 'Published via eBay API',
         status: 'success',
         createdAt: new Date().toISOString()
      });
      
-     res.json({ success: true, message: 'Published' });
+     return publishData.listingId;
+}
+
+app.post('/api/ebay/publish', requireMarketplaceAuth, async (req: any, res: any) => {
+  try {
+     const listingId = await publishToEbay(req.user.uid, req.body.inventoryItemId, req.body.price);
+     res.json({ success: true, listingId });
   } catch(e) {
+     const db = getFirestore();
+     await db.collection('marketplaceAuditEvents').add({
+        ownerUid: req.user.uid, actorType: 'user', actorUid: req.user.uid, source: 'assixcrm_ui', action: 'publish_listing', targetType: 'inventoryItem', targetId: req.body.inventoryItemId,
+        requestSummary: 'Publish to eBay', resultSummary: 'Failed: ' + (e as any).toString(), status: 'failure', createdAt: new Date().toISOString()
+     });
      res.status(500).json({ error: (e as any).toString() });
   }
 });
-
-app.post('/api/ebay/sync', requireMarketplaceAuth, async (req: any, res: any) => {
-   res.json({ success: true, synced: 0 });
+app.post('/api/ebay/sync-cron', async (req: any, res: any) => {
+    const authHeader = req.headers.authorization;
+    if (process.env.NODE_ENV === 'production' && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+        return res.status(401).json({ error: 'Unauthorized CRON' });
+    }
+    
+    const db = getFirestore();
+    const connections = await db.collection('marketplaceConnections').where('provider', '==', 'ebay').where('connectionStatus', '==', 'connected').get();
+    let synced = 0;
+    
+    for (const connDoc of connections.docs) {
+        try {
+           const conn = connDoc.data();
+           const ownerUid = conn.ownerUid;
+           const refreshToken = decryptToken(conn.encryptedRefreshToken);
+           const env = conn.environment || 'sandbox';
+           const tokenUrl = env === 'production' ? 'https://api.ebay.com/identity/v1/oauth2/token' : 'https://api.sandbox.ebay.com/identity/v1/oauth2/token';
+           const authHeaderStr = Buffer.from(`${process.env.EBAY_CLIENT_ID}:${process.env.EBAY_CLIENT_SECRET}`).toString('base64');
+           
+           if (!process.env.EBAY_CLIENT_ID || !refreshToken) continue;
+           
+           const tokenRes = await fetch(tokenUrl, {
+             method: 'POST',
+             headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Authorization': `Basic ${authHeaderStr}` },
+             body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken, scope: 'https://api.ebay.com/oauth/api_scope/sell.fulfillment https://api.ebay.com/oauth/api_scope/sell.inventory' })
+           });
+           
+           const tokenData = await tokenRes.json();
+           if (!tokenData.access_token) continue;
+           const accessToken = tokenData.access_token;
+           
+           const baseUrl = env === 'production' ? 'https://api.ebay.com/sell/fulfillment/v1' : 'https://api.sandbox.ebay.com/sell/fulfillment/v1';
+           
+           const ordersRes = await fetch(`${baseUrl}/order?filter=creationdate:[${new Date(Date.now() - 24*60*60*1000).toISOString()}..]`, {
+               headers: { 'Authorization': `Bearer ${accessToken}` }
+           });
+           
+           if (!ordersRes.ok) continue;
+           const ordersData = await ordersRes.json();
+           
+           for (const order of ordersData.orders || []) {
+               const orderRef = db.collection('orders').doc(order.orderId);
+               await orderRef.set({
+                   ownerUid,
+                   marketplace: 'ebay',
+                   externalOrderId: order.orderId,
+                   fulfillmentStatus: order.orderFulfillmentStatus,
+                   orderedAt: order.creationDate,
+                   lastSyncedAt: new Date().toISOString()
+               }, { merge: true });
+               synced++;
+           }
+        } catch (e) {
+            console.error('Error syncing connection', connDoc.id, e);
+        }
+    }
+    
+    res.json({ success: true, synced });
 });
 // --- END EBAY LISTING ---
 
 // --- MCP PROTOCOL HTTP ENDPOINT ---
-// Implements Model Context Protocol (MCP) JSON-RPC specification
-app.post('/mcp', requireMarketplaceAuth, async (req: any, res: any) => {
-  try {
-     const ownerUid = req.user.uid;
-     const { jsonrpc, id, method, params } = req.body;
-     const db = getFirestore();
-     
-     if (jsonrpc !== '2.0') return res.status(400).json({ error: 'Invalid JSON-RPC version' });
 
-     // Tool Discovery
-     if (method === 'tools/list') {
-        return res.json({
-           jsonrpc: '2.0',
-           id,
-           result: {
-              tools: [
+
+
+
+const mcpSessions = new Map<string, { transport: SSEServerTransport, server: Server, ownerUid: string }>();
+
+app.get('/mcp/sse', requireMarketplaceAuth, async (req: any, res: any) => {
+    const ownerUid = req.user.uid;
+    const sessionId = crypto.randomUUID();
+    
+    // The SSE transport will append ?sessionId=... to the endpoint URL it gives the client
+    const transport = new SSEServerTransport('/mcp/messages?sessionId=' + sessionId, res);
+    
+    const server = new Server(
+      { name: "AssixCRM", version: "1.0.0" },
+      { capabilities: { tools: {} } }
+    );
+    
+    server.setRequestHandler(ListToolsRequestSchema, async () => {
+        return {
+            tools: [
                  {
                     name: 'save_arbitrage_opportunity',
                     description: 'Saves a new arbitrage opportunity discovered by the AI.',
@@ -1804,17 +1898,16 @@ app.post('/mcp', requireMarketplaceAuth, async (req: any, res: any) => {
                        required: ['inventoryItemId']
                     }
                  }
-              ]
-           }
-        });
-     }
-     
-     // Tool Invocation
-     if (method === 'tools/call') {
-        const { name, arguments: args } = params || {};
+            ]
+        };
+    });
+
+    server.setRequestHandler(CallToolRequestSchema, async (request) => {
+        const { name, arguments: args } = request.params;
+        const db = getFirestore();
         
         if (name === 'save_arbitrage_opportunity') {
-           const { sourceMarketplace, sourceUrl, sourcePrice, expectedNetProfit } = args;
+           const { sourceMarketplace, sourceUrl, sourcePrice, expectedNetProfit } = args as any;
            const newDoc = await db.collection('arbitrageOpportunities').add({
               ownerUid,
               sourceMarketplace,
@@ -1839,63 +1932,48 @@ app.post('/mcp', requireMarketplaceAuth, async (req: any, res: any) => {
                status: 'success',
                createdAt: new Date().toISOString()
            });
-           
-           return res.json({
-             jsonrpc: '2.0',
-             id,
-             result: { content: [{ type: 'text', text: JSON.stringify({ success: true, id: newDoc.id }) }] }
-           });
+           return { content: [{ type: 'text', text: JSON.stringify({ success: true, id: newDoc.id }) }] };
         }
         
         if (name === 'list_inventory') {
            const snapshot = await db.collection('inventoryItems').where('ownerUid', '==', ownerUid).get();
            const items = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-           return res.json({
-             jsonrpc: '2.0',
-             id,
-             result: { content: [{ type: 'text', text: JSON.stringify({ success: true, items }) }] }
-           });
+           return { content: [{ type: 'text', text: JSON.stringify({ success: true, items }) }] };
         }
         
         if (name === 'approve_and_publish_ebay_listing') {
-           const { inventoryItemId } = args;
+           const { inventoryItemId } = args as any;
            const inventoryDoc = await db.collection('inventoryItems').doc(inventoryItemId).get();
            
            if (!inventoryDoc.exists || inventoryDoc.data()?.ownerUid !== ownerUid) {
-              return res.json({ jsonrpc: '2.0', id, error: { code: 403, message: 'Forbidden' }});
+              throw new Error('Forbidden');
            }
            if (!inventoryDoc.data()?.ownershipConfirmed) {
-              return res.json({ jsonrpc: '2.0', id, error: { code: 400, message: 'Publish blocked: ownershipConfirmed must be true.' }});
+              throw new Error('Publish blocked: ownershipConfirmed must be true.');
            }
            
-           await db.collection('marketplaceAuditEvents').add({
-               ownerUid,
-               actorType: 'mcp',
-               actorUid: ownerUid,
-               source: 'chatgpt',
-               action: 'publish_ebay_listing',
-               targetType: 'inventoryItem',
-               targetId: inventoryItemId,
-               requestSummary: 'Approve and publish from MCP',
-               resultSummary: 'Success',
-               status: 'success',
-               createdAt: new Date().toISOString()
-           });
-           
-           return res.json({
-             jsonrpc: '2.0',
-             id,
-             result: { content: [{ type: 'text', text: JSON.stringify({ success: true, message: 'Published via MCP' }) }] }
-           });
+           const listingId = await publishToEbay(ownerUid, inventoryItemId, args.price || 0);
+           return { content: [{ type: 'text', text: JSON.stringify({ success: true, listingId }) }] };
         }
         
-        return res.json({ jsonrpc: '2.0', id, error: { code: -32601, message: 'Method not found' }});
-     }
-     
-     return res.status(400).json({ error: 'Unknown JSON-RPC method' });
-  } catch(e) {
-     return res.status(500).json({ error: (e as any).toString() });
-  }
+        throw new Error('Unknown tool');
+    });
+
+    mcpSessions.set(sessionId, { transport, server, ownerUid });
+    await server.connect(transport);
+});
+
+app.post('/mcp/messages', async (req: any, res: any) => {
+    // Note: in a real implementation, the client sends ?sessionId=...
+    const sessionId = req.query.sessionId;
+    const session = mcpSessions.get(sessionId as string);
+    if (!session) {
+        return res.status(404).json({ error: 'Session not found' });
+    }
+    
+    // We don't need requireMarketplaceAuth here if we rely on the unguessable sessionId, 
+    // but we can enforce it.
+    await session.transport.handlePostMessage(req, res);
 });
 // --- END MCP ENDPOINT ---
 
