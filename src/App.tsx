@@ -24,6 +24,7 @@ import { AIVideoPitchModal } from './components/AIVideoPitchModal';
 import { AIVoiceNoteModal } from './components/AIVoiceNoteModal';
 import { VideoPitchWatchPortal } from './components/VideoPitchWatchPortal';
 import { ProspectDiscovery } from './components/ProspectDiscovery';
+import { MarketplaceDashboard } from './components/Marketplace/MarketplaceDashboard';
 import { compressAndGetInstantDataUrl } from './utils/imageCompressor';
 import { Instagram, Plus, FileSpreadsheet, Sparkles, FilterX, ShieldCheck, Loader2, X, FolderOpen, Users, Layers, Pencil } from 'lucide-react';
 import {
@@ -87,6 +88,7 @@ export default function App() {
 
   // UI Settings
   const [viewMode, setViewMode] = useState<ViewMode>('table');
+  const [activePage, setActivePage] = useState<'crm' | 'marketplace'>('crm');
   const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
   const [fullCanvasMode, setFullCanvasMode] = useState<boolean>(false);
 
@@ -1037,6 +1039,8 @@ if (data.success) {
           onOpenVoiceNotes={() => setIsVoiceNoteModalOpen(true)}
           isCloudSyncEnabled={isCloudSyncEnabled}
           onToggleCloudSync={() => setIsCloudSyncEnabled(!isCloudSyncEnabled)}
+          activePage={activePage}
+          onPageChange={setActivePage}
         />
       )}
 

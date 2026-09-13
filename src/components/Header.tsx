@@ -55,6 +55,8 @@ interface HeaderProps {
   onSignOut?: () => void;
   onOpenAccountsDirectory?: () => void;
   isCloudSyncEnabled?: boolean;
+  activePage?: 'crm' | 'marketplace';
+  onPageChange?: (page: 'crm' | 'marketplace') => void;
   onToggleCloudSync?: () => void;
 }
 
@@ -88,12 +90,33 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenAccountsDirectory,
   isCloudSyncEnabled,
   onToggleCloudSync,
+  activePage = 'crm',
+  onPageChange,
 }) => {
   return (
     <header className="sticky top-0 z-30 transition-colors backdrop-blur-xl bg-white/90 dark:bg-zinc-950/90 border-b border-zinc-200 dark:border-zinc-800/80 shadow-xs">
       <div className="max-w-[1600px] mx-auto px-3 sm:px-4 py-2.5 sm:py-3 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5 sm:gap-3">
         {/* Brand & Search Section */}
         <div className="flex items-center gap-2 sm:gap-3 flex-1 min-w-0">
+          
+        {/* Navigation Tabs */}
+        {onPageChange && (
+          <div className="flex items-center gap-1 bg-zinc-100 dark:bg-zinc-900 p-1 rounded-xl shrink-0">
+            <button
+              onClick={() => onPageChange('crm')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${activePage === 'crm' ? 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'}`}
+            >
+              CRM
+            </button>
+            <button
+              onClick={() => onPageChange('marketplace')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${activePage === 'marketplace' ? 'bg-white dark:bg-zinc-800 text-[#007AFF] shadow-sm' : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'}`}
+            >
+              Marketplace
+            </button>
+          </div>
+        )}
+   
           {/* Mac Window Buttons */}
           <div className="flex items-center gap-1.5 group shrink-0 py-1 px-0.5">
             <button

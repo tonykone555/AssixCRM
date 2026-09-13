@@ -1,35 +1,9 @@
-rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    
-    function isAuthenticated() {
-      return request.auth != null;
-    }
-    
-    function isSuperAdmin() {
-      return isAuthenticated() && (
-        request.auth.token.email.lower() == "tonykone21@gmail.com" || 
-        request.auth.email.lower() == "tonykone21@gmail.com"
-      );
-    }
+const fs = require('fs');
+let code = fs.readFileSync('firestore.rules', 'utf8');
 
-    match /users/{userId} {
-      allow read, write: if isAuthenticated();
-    }
+const regex = /\/\/ Marketplace Rules[\s\S]*match \/marketplaceAuditEvents\/\{docId\} \{\s*allow read, write:[^}]*\}\s*/m;
 
-    match /leads/{leadId} {
-      allow read, create, update, delete: if isAuthenticated();
-    }
-
-    match /customFields/{fieldId} {
-      allow read, create, update, delete: if isAuthenticated();
-    }
-
-    match /messages/{messageId} {
-      allow read, create, update, delete: if isAuthenticated();
-    }
-
-    
+const newRules = `
     // Marketplace Rules - Strictly isolated by ownerUid
     match /oauthStates/{docId} {
       allow read, update, delete: if isAuthenticated() && (resource == null || resource.data.ownerUid == request.auth.uid || isSuperAdmin());
@@ -63,5 +37,7 @@ service cloud.firestore {
       allow read, update, delete: if isAuthenticated() && (resource == null || resource.data.ownerUid == request.auth.uid || isSuperAdmin());
       allow create: if isAuthenticated() && (request.resource.data.ownerUid == request.auth.uid || isSuperAdmin());
     }
-}
-}
+`;
+
+code = code.replace(regex, newRules);
+fs.writeFileSync('firestore.rules', code);
