@@ -43,13 +43,13 @@ async function startServer() {
         serviceAccount = JSON.parse(fs.readFileSync(process.env.FIREBASE_SERVICE_ACCOUNT_KEY, 'utf8'));
       }
       admin.initializeApp({
-        // @ts-ignore
-        credential: admin.credential.cert(serviceAccount)
+        credential: admin.cert(serviceAccount)
       });
-      adminInitialized = true;
     } else {
-      console.warn("FIREBASE_SERVICE_ACCOUNT_KEY not set in environment. Push notifications will be disabled.");
+      console.warn("FIREBASE_SERVICE_ACCOUNT_KEY not set. Initializing with default credentials.");
+      admin.initializeApp();
     }
+    adminInitialized = true;
   } catch (err) {
     console.error("Failed to initialize Firebase Admin:", err);
   }
@@ -1517,16 +1517,31 @@ function decryptToken(text: string) {
 // 2. Authentication Middleware
 const requireMarketplaceAuth = async (req: any, res: any, next: any) => {
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-     return res.status(401).json({ error: 'Unauthorized: Missing or invalid authorization header' });
+  const queryToken = req.query.token;
+  
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : queryToken;
+  
+  if (!token) {
+     return res.status(401).json({ error: 'Unauthorized: Missing token' });
   }
-  const token = authHeader.split('Bearer ')[1];
+  
   try {
      const decodedToken = await getAuth().verifyIdToken(token);
      req.user = decodedToken;
-     next();
+     return next();
   } catch(e) {
-     return res.status(401).json({ error: 'Unauthorized: Invalid Firebase token' });
+     // Try MCP PAT token
+     try {
+         const db = getFirestore();
+         const patQuery = await db.collection('mcpTokens').where('token', '==', token).get();
+         if (!patQuery.empty) {
+             const patDoc = patQuery.docs[0].data();
+             req.user = { uid: patDoc.ownerUid, isMcpPat: true };
+             return next();
+         }
+     } catch(patErr) {}
+     
+     return res.status(401).json({ error: 'Unauthorized: Invalid token' });
   }
 };
 
@@ -1786,12 +1801,13 @@ app.post('/api/ebay/publish', requireMarketplaceAuth, async (req: any, res: any)
   }
 });
 app.post('/api/ebay/sync-cron', async (req: any, res: any) => {
-    const authHeader = req.headers.authorization;
-    if (process.env.NODE_ENV === 'production' && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-        return res.status(401).json({ error: 'Unauthorized CRON' });
-    }
-    
-    const db = getFirestore();
+    try {
+        const authHeader = req.headers.authorization;
+        if (process.env.NODE_ENV === 'production' && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+            return res.status(401).json({ error: 'Unauthorized CRON' });
+        }
+        
+        const db = getFirestore();
     const connections = await db.collection('marketplaceConnections').where('provider', '==', 'ebay').where('connectionStatus', '==', 'connected').get();
     let synced = 0;
     
@@ -1843,6 +1859,10 @@ app.post('/api/ebay/sync-cron', async (req: any, res: any) => {
     }
     
     res.json({ success: true, synced });
+    } catch(err: any) {
+        console.error('CRON ERROR:', err);
+        res.status(500).json({ error: err.message });
+    }
 });
 // --- END EBAY LISTING ---
 
@@ -1852,6 +1872,26 @@ app.post('/api/ebay/sync-cron', async (req: any, res: any) => {
 
 
 const mcpSessions = new Map<string, { transport: SSEServerTransport, server: Server, ownerUid: string }>();
+
+
+// MCP Token Generation Route
+app.post('/api/mcp/generate-token', requireMarketplaceAuth, async (req: any, res: any) => {
+    try {
+        const db = getFirestore();
+        const crypto = require('crypto');
+        const token = 'mcp_' + crypto.randomBytes(32).toString('hex');
+        
+        await db.collection('mcpTokens').add({
+            ownerUid: req.user.uid,
+            token: token,
+            createdAt: new Date().toISOString()
+        });
+        
+        res.json({ token });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
 
 app.get('/mcp/sse', requireMarketplaceAuth, async (req: any, res: any) => {
     const ownerUid = req.user.uid;
@@ -1952,7 +1992,7 @@ app.get('/mcp/sse', requireMarketplaceAuth, async (req: any, res: any) => {
               throw new Error('Publish blocked: ownershipConfirmed must be true.');
            }
            
-           const listingId = await publishToEbay(ownerUid, inventoryItemId, args.price || 0);
+           const listingId = await publishToEbay(ownerUid, inventoryItemId, (args as any).price || 0);
            return { content: [{ type: 'text', text: JSON.stringify({ success: true, listingId }) }] };
         }
         

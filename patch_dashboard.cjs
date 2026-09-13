@@ -1,4 +1,7 @@
-import React, { useState, useEffect } from 'react';
+const fs = require('fs');
+let code = fs.readFileSync('src/components/Marketplace/MarketplaceDashboard.tsx', 'utf8');
+
+const replacement = `import React, { useState, useEffect } from 'react';
 import { ShoppingBag, TrendingUp, Package, Link2, DollarSign, Activity, GitCommit, FileText, Plus, Check, Loader2 } from 'lucide-react';
 import { db } from '../../lib/firebase';
 import { collection, query, where, onSnapshot, addDoc } from 'firebase/firestore';
@@ -29,7 +32,7 @@ export const MarketplaceDashboard: React.FC<{ currentUser: any }> = ({ currentUs
         price: Number(newItem.price),
         condition: newItem.condition,
         category: newItem.category,
-        internalSku: `SKU-${Date.now()}`,
+        internalSku: \`SKU-\${Date.now()}\`,
         ownershipConfirmed: true, 
         userOwnedImages: ['https://example.com/image.jpg'], 
         createdAt: new Date().toISOString()
@@ -49,7 +52,7 @@ export const MarketplaceDashboard: React.FC<{ currentUser: any }> = ({ currentUs
           method: 'POST',
           headers: {
              'Content-Type': 'application/json',
-             'Authorization': `Bearer ${token}`
+             'Authorization': \`Bearer \${token}\`
           },
           body: JSON.stringify({
              inventoryItemId: item.id,
@@ -91,11 +94,11 @@ export const MarketplaceDashboard: React.FC<{ currentUser: any }> = ({ currentUs
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id as any)}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-xl font-semibold text-sm transition-all whitespace-nowrap ${
+              className={\`flex items-center gap-2 px-3 py-1.5 rounded-xl font-semibold text-sm transition-all whitespace-nowrap \${
                 activeTab === tab.id
                   ? 'bg-zinc-900 text-white dark:bg-white dark:text-black shadow-md'
                   : 'text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-900'
-              }`}
+              }\`}
             >
               {tab.icon}
               {tab.label}
@@ -170,7 +173,7 @@ export const MarketplaceDashboard: React.FC<{ currentUser: any }> = ({ currentUs
                    <div key={item.id} className="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm flex flex-col">
                        <div className="flex-1">
                            <h4 className="font-bold text-zinc-900 dark:text-white line-clamp-1">{item.title}</h4>
-                           <p className="text-sm font-semibold text-emerald-600 dark:text-emerald-400 mt-1">${(item.price || 0).toFixed(2)}</p>
+                           <p className="text-sm font-semibold text-emerald-600 dark:text-emerald-400 mt-1">$\{(item.price || 0).toFixed(2)}</p>
                            <p className="text-xs text-zinc-500 mt-2 line-clamp-2">{item.description}</p>
                            
                            <div className="flex gap-2 mt-4">
@@ -203,35 +206,11 @@ export const MarketplaceDashboard: React.FC<{ currentUser: any }> = ({ currentUs
           <div className="bg-white dark:bg-zinc-900 p-6 rounded-2xl border border-zinc-200 dark:border-zinc-800 shadow-sm max-w-xl">
              <h3 className="font-bold text-lg mb-4 text-zinc-900 dark:text-white">eBay Seller Account</h3>
              <p className="text-zinc-500 text-sm mb-6">Connect your eBay account to manage listings, inventory, and orders directly.</p>
-             
-             <div className="mb-8 p-4 bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-xl">
-                 <h4 className="font-bold text-sm mb-2 text-zinc-900 dark:text-white">ChatGPT / MCP Integration</h4>
-                 <p className="text-xs text-zinc-500 mb-4">Generate a Personal Access Token to connect AssixCRM with ChatGPT or other MCP-compatible clients.</p>
-                 <button
-                    onClick={async () => {
-                       try {
-                           const token = await currentUser.getIdToken();
-                           const res = await fetch('/api/mcp/generate-token', { method: 'POST', headers: { 'Authorization': `Bearer ${token}` }});
-                           const data = await res.json();
-                           alert("Your new MCP Token: " + data.token + "\n\nCopy this now, it won't be shown again!");
-                       } catch(e) { alert('Failed to generate token'); }
-                    }}
-                    className="px-4 py-2 bg-zinc-900 dark:bg-white text-white dark:text-black font-semibold rounded-lg text-sm shadow-sm hover:opacity-90 transition-opacity"
-                 >
-                     Generate Access Token
-                 </button>
-                 
-                 <div className="mt-4 pt-4 border-t border-zinc-200 dark:border-zinc-800">
-                    <p className="text-xs font-mono text-zinc-500 break-all">
-                       MCP Server URL: {window.location.origin}/mcp/sse
-                    </p>
-                 </div>
-             </div>
              <button
                 onClick={async () => {
                  try {
                    const token = await currentUser.getIdToken();
-                   const res = await fetch('/api/ebay/auth-url', { headers: { 'Authorization': `Bearer ${token}` } });
+                   const res = await fetch('/api/ebay/auth-url', { headers: { 'Authorization': \`Bearer \${token}\` } });
                    const data = await res.json();
                    if (data.url) window.location.href = data.url;
                  } catch(e) {
@@ -255,3 +234,6 @@ export const MarketplaceDashboard: React.FC<{ currentUser: any }> = ({ currentUs
     </div>
   );
 };
+`;
+
+fs.writeFileSync('src/components/Marketplace/MarketplaceDashboard.tsx', replacement);
